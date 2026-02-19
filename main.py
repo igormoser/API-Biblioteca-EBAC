@@ -99,11 +99,11 @@ def get_livros(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
     )
 
     livros_paginados = [
-        {"id": livro.id, "título": livro.titulo, "autor": livro.autor, "ano": livro.ano}
+        {"id": livro.id, "titulo": livro.titulo, "autor": livro.autor, "ano": livro.ano}
         for livro in livros_db
     ]
 
-    mensagem = "Biblioteca vazia!" if not total == 0 else "Livros cadastrados."
+    mensagem = "Biblioteca vazia!" if total == 0 else "Livros cadastrados."
     return {
         "mensagem": mensagem,
         "livros": livros_paginados,
@@ -123,7 +123,7 @@ def get_livro(id_livro: int, db: Session = Depends(get_db)):
 
     return {
         "id": livro_db.id,
-        "título": livro_db.titulo,
+        "titulo": livro_db.titulo,
         "autor": livro_db.autor,
         "ano": livro_db.ano,
     }
@@ -141,10 +141,12 @@ def post_livros(livro: CriarLivro, db: Session = Depends(get_db)):
 
     return {
         "mensagem": "Livro criado com sucesso!",
-        "livro": novo_livro.id,
-        "título": novo_livro.titulo,
-        "autor": novo_livro.autor,
-        "ano": novo_livro.ano
+        "livro": {
+            "id": novo_livro.id,
+            "titulo": novo_livro.titulo,
+            "autor": novo_livro.autor,
+            "ano": novo_livro.ano,
+        },
     }
 
 @app.put("/livros/{id_livro}", dependencies=[Depends(authenticate_user)])
@@ -166,7 +168,7 @@ def put_livro(id_livro: int, livro: AtualizarLivro, db: Session = Depends(get_db
         "mensagem": "Livro atualizado com sucesso!",
         "livro": {
             "id": livro_db.id,
-            "título": livro_db.titulo,
+            "titulo": livro_db.titulo,
             "autor": livro_db.autor,
             "ano": livro_db.ano,
         },
@@ -181,7 +183,7 @@ def delete_livro(id_livro: int, db: Session = Depends(get_db)):
 
     livro_removido = {
         "id": livro_db.id,
-        "título": livro_db.titulo,
+        "titulo": livro_db.titulo,
         "autor": livro_db.autor,
         "ano": livro_db.ano,
     }
