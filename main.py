@@ -65,7 +65,7 @@ def authenticate_user(credentials: HTTPBasicCredentials = Depends(security)) -> 
 class Livro(Base):
     __tablename__ = "livros"
     id = Column(Integer, primary_key=True)
-    nome = Column(String, index=True)
+    titulo = Column(String, index=True)
     autor = Column(String, index=True)
     ano = Column(Integer)
 
@@ -74,18 +74,14 @@ Base.metadata.create_all(bind=engine)
 # ~~~~~~~~~~~~~~~~~~~ Schemas (-Pydantic-) ~~~~~~~~~~~~~~~~~~~ #
 
 class CriarLivro(BaseModel):
-    nome: str
+    titulo: str
     autor: str
     ano: int
 
 class AtualizarLivro(BaseModel):
-    nome: str
+    titulo: str
     autor: str
     ano: int
-
-# ~~~~~~~~~~~~~~~~~~~ Legado (em memória temporário) ~~~~~~~~~~~~~~~~~~~ #
-
-biblioteca_livros: dict[int, dict] = {}
 
 # ~~~~~~~~~~~~~~~~~~~ Paginação ~~~~~~~~~~~~~~~~~~~ #
 
@@ -103,11 +99,11 @@ def get_livros(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
     )
 
     livros_paginados = [
-        {"id": livro.id, "nome": livro.nome, "autor": livro.autor, "ano": livro.ano}
+        {"id": livro.id, "título": livro.titulo, "autor": livro.autor, "ano": livro.ano}
         for livro in livros_db
     ]
 
-    mensagem = "Biblioteca vazia!" if not biblioteca_livros else "Livros cadastrados."
+    mensagem = "Biblioteca vazia!" if not total == 0 else "Livros cadastrados."
     return {
         "mensagem": mensagem,
         "livros": livros_paginados,
@@ -127,7 +123,7 @@ def get_livro(id_livro: int, db: Session = Depends(get_db)):
 
     return {
         "id": livro_db.id,
-        "nome": livro_db.nome,
+        "título": livro_db.titulo,
         "autor": livro_db.autor,
         "ano": livro_db.ano,
     }
@@ -135,7 +131,7 @@ def get_livro(id_livro: int, db: Session = Depends(get_db)):
 @app.post("/livros", dependencies=[Depends(authenticate_user)])
 def post_livros(livro: CriarLivro, db: Session = Depends(get_db)):
     novo_livro = Livro(
-        nome=livro.nome,
+        titulo=livro.titulo,
         autor=livro.autor,
         ano=livro.ano,
     )
@@ -146,7 +142,7 @@ def post_livros(livro: CriarLivro, db: Session = Depends(get_db)):
     return {
         "mensagem": "Livro criado com sucesso!",
         "livro": novo_livro.id,
-        "nome": novo_livro.nome,
+        "título": novo_livro.titulo,
         "autor": novo_livro.autor,
         "ano": novo_livro.ano
     }
@@ -159,7 +155,7 @@ def put_livro(id_livro: int, livro: AtualizarLivro, db: Session = Depends(get_db
     if livro_db is None:
         raise HTTPException(status_code=404, detail="Livro não encontrado.")
 
-    livro_db.nome = livro.nome
+    livro_db.titulo = livro.titulo
     livro_db.autor = livro.autor
     livro_db.ano = livro.ano
 
@@ -170,7 +166,7 @@ def put_livro(id_livro: int, livro: AtualizarLivro, db: Session = Depends(get_db
         "mensagem": "Livro atualizado com sucesso!",
         "livro": {
             "id": livro_db.id,
-            "nome": livro_db.nome,
+            "título": livro_db.titulo,
             "autor": livro_db.autor,
             "ano": livro_db.ano,
         },
@@ -185,7 +181,7 @@ def delete_livro(id_livro: int, db: Session = Depends(get_db)):
 
     livro_removido = {
         "id": livro_db.id,
-        "nome": livro_db.nome,
+        "título": livro_db.titulo,
         "autor": livro_db.autor,
         "ano": livro_db.ano,
     }
