@@ -1,11 +1,38 @@
-# ~~~~~~~~~~~~~~~~~~~ Start do FastAPI ~~~~~~~~~~~~~~~~~~~ #
+# ~~~~~~~~~~~~~~~~~~~ Start do FastAPI (-Imports-) ~~~~~~~~~~~~~~~~~~~ #
 
-from fastapi import FastAPI, HTTPException, Depends
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from pydantic import BaseModel
 import secrets
 
-# ~~~~~~~~~~~~~~~~~~~ DOCS ~~~~~~~~~~~~~~~~~~~ #
+from fastapi import Depends, FastAPI, HTTPException
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from pydantic import BaseModel
+
+from sqlalchemy import Column, Integer, String, create_engine
+from sqlalchemy.orm import Session, declarative_base, sessionmaker
+
+# region ~~~~~~~~~~~~~~~~~~~ Database ( SQLite / SQLAlchemy ~~~~~~~~~~~~~~~~~~~ #
+
+DATABASE_URL = "sqlite:///./biblioteca.db"
+
+engine = create_engine(
+    DATABASE_URL,
+    connect_args={"check_same_thread": False},
+)
+
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+# endregion
+
+# ~~~~~~~~~~~~~~~~~~~ Session (-Dependency-) ~~~~~~~~~~~~~~~~~~~ #
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+# ~~~~~~~~~~~~~~~~~~~ FastAPI (-Docs-) ~~~~~~~~~~~~~~~~~~~ #
 app = FastAPI(
     title="Biblioteca",
     description="API de Biblioteca",
@@ -13,29 +40,40 @@ app = FastAPI(
     contact= {"name": "Igor", "email": "igormoser@outlook.com"}
 )
 
-# ~~~~~~~~~~~~~~~~~~~ Security ~~~~~~~~~~~~~~~~~~~ #
+# ~~~~~~~~~~~~~~~~~~~ Security (-HTTP Basic-) ~~~~~~~~~~~~~~~~~~~ #
 
 LOGIN = "admin"
 PASSWORD = "admin"
 
 security = HTTPBasic()
 
-def authenticate_user(credentials: HTTPBasicCredentials = Depends(security)):
+def authenticate_user(credentials: HTTPBasicCredentials = Depends(security)) -> str:
     login_correct = secrets.compare_digest(credentials.username, LOGIN)
     password_correct = secrets.compare_digest(credentials.password, PASSWORD)
+
     if not (login_correct and password_correct):
-        raise HTTPException(status_code=401,
-                            detail="Credenciais inválidas.",
-                            headers={"WWW-Authenticate": "Basic"}
-                            )
+        raise HTTPException(
+            status_code=401,
+            detail="Credenciais inválidas.",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+
     return credentials.username
 
-# ~~~~~~~~~~~~~~~~~~~ Classes ~~~~~~~~~~~~~~~~~~~ #
+# ~~~~~~~~~~~~~~~~~~~ ORM Models ~~~~~~~~~~~~~~~~~~~ #
 
-biblioteca_livros: dict[int, dict] = {}
+class Livro(Base):
+    __tablename__ = "livros"
+    id = Column(Integer, primary_key=True)
+    nome = Column(String, index=True)
+    autor = Column(String, index=True)
+    ano = Column(Integer)
+
+Base.metadata.create_all(bind=engine)
+
+# ~~~~~~~~~~~~~~~~~~~ Schemas (-Pydantic-) ~~~~~~~~~~~~~~~~~~~ #
 
 class CriarLivro(BaseModel):
-    id: int
     nome: str
     autor: str
     ano: int
@@ -45,65 +83,117 @@ class AtualizarLivro(BaseModel):
     autor: str
     ano: int
 
+# ~~~~~~~~~~~~~~~~~~~ Legado (em memória temporário) ~~~~~~~~~~~~~~~~~~~ #
+
+biblioteca_livros: dict[int, dict] = {}
+
 # ~~~~~~~~~~~~~~~~~~~ Paginação ~~~~~~~~~~~~~~~~~~~ #
 
 @app.get("/livros", dependencies=[Depends(authenticate_user)])
-def get_livros(skip: int = 0, limit: int = 10):
+def get_livros(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
 
-    livros_lista = list(biblioteca_livros.values())
-    livros_lista.sort(key=lambda livro: livro["id"])
+    total = db.query(Livro).count()
 
-    livros_paginados = livros_lista[skip: skip + limit]
+    livros_db = (
+        db.query(Livro)
+        .order_by(Livro.id)
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+
+    livros_paginados = [
+        {"id": livro.id, "nome": livro.nome, "autor": livro.autor, "ano": livro.ano}
+        for livro in livros_db
+    ]
 
     mensagem = "Biblioteca vazia!" if not biblioteca_livros else "Livros cadastrados."
     return {
         "mensagem": mensagem,
         "livros": livros_paginados,
-        "total": len(livros_lista),
+        "total": total,
         "skip": skip,
         "limit": limit
     }
 
 # ~~~~~~~~~~~~~~~~~~~ CRUD ~~~~~~~~~~~~~~~~~~~ #
+
 @app.get("/livros/{id_livro}", dependencies=[Depends(authenticate_user)])
-def get_livro(id_livro: int):
-    if id_livro not in biblioteca_livros:
+def get_livro(id_livro: int, db: Session = Depends(get_db)):
+    livro_db = db.query(Livro).filter(Livro.id == id_livro).first()
+
+    if livro_db is None:
         raise HTTPException(status_code=404, detail="Livro não encontrado.")
 
-    return biblioteca_livros[id_livro]
+    return {
+        "id": livro_db.id,
+        "nome": livro_db.nome,
+        "autor": livro_db.autor,
+        "ano": livro_db.ano,
+    }
 
 @app.post("/livros", dependencies=[Depends(authenticate_user)])
-def post_livros(livro: CriarLivro):
-    if livro.id in biblioteca_livros:
-        raise HTTPException(status_code=409, detail="Já existe um livro com este ID.")
+def post_livros(livro: CriarLivro, db: Session = Depends(get_db)):
+    novo_livro = Livro(
+        nome=livro.nome,
+        autor=livro.autor,
+        ano=livro.ano,
+    )
+    db.add(novo_livro)
+    db.commit()
+    db.refresh(novo_livro)
 
-    biblioteca_livros[livro.id] = livro.model_dump()
-
-    return biblioteca_livros[livro.id]
+    return {
+        "mensagem": "Livro criado com sucesso!",
+        "livro": novo_livro.id,
+        "nome": novo_livro.nome,
+        "autor": novo_livro.autor,
+        "ano": novo_livro.ano
+    }
 
 @app.put("/livros/{id_livro}", dependencies=[Depends(authenticate_user)])
-def put_livro(id_livro: int, livro: AtualizarLivro):
-    if id_livro not in biblioteca_livros:
+def put_livro(id_livro: int, livro: AtualizarLivro, db: Session = Depends(get_db)):
+
+    livro_db = db.query(Livro).filter(Livro.id == id_livro).first()
+
+    if livro_db is None:
         raise HTTPException(status_code=404, detail="Livro não encontrado.")
 
-    livro_atual = biblioteca_livros[id_livro]
-    livro_atual['nome'] = livro.nome
-    livro_atual['autor'] = livro.autor
-    livro_atual['ano'] = livro.ano
+    livro_db.nome = livro.nome
+    livro_db.autor = livro.autor
+    livro_db.ano = livro.ano
+
+    db.commit()
+    db.refresh(livro_db)
 
     return {
         "mensagem": "Livro atualizado com sucesso!",
-        "livro": livro_atual
+        "livro": {
+            "id": livro_db.id,
+            "nome": livro_db.nome,
+            "autor": livro_db.autor,
+            "ano": livro_db.ano,
+        },
     }
 
 @app.delete("/livros/{id_livro}", dependencies=[Depends(authenticate_user)])
-def delete_livro(id_livro: int):
-    if id_livro not in biblioteca_livros:
+def delete_livro(id_livro: int, db: Session = Depends(get_db)):
+    livro_db = db.query(Livro).filter(Livro.id == id_livro).first()
+
+    if livro_db is None:
         raise HTTPException(status_code=404, detail="Livro não encontrado.")
 
-    livro_removido = biblioteca_livros.pop(id_livro)
+    livro_removido = {
+        "id": livro_db.id,
+        "nome": livro_db.nome,
+        "autor": livro_db.autor,
+        "ano": livro_db.ano,
+    }
+
+    db.delete(livro_db)
+    db.commit()
 
     return {
         "mensagem": "Livro deletado com sucesso!",
-        "livro": livro_removido
+        "livro": livro_removido,
     }
