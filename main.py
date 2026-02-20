@@ -1,4 +1,4 @@
-# ~~~~~~~~~~~~~~~~~~~ Start do FastAPI (-Imports-) ~~~~~~~~~~~~~~~~~~~ #
+# region ~~~~~~~~~~~~~~~~~~~ Start do FastAPI (-Imports-) ~~~~~~~~~~~~~~~~~~~ #
 
 import secrets
 
@@ -8,6 +8,8 @@ from pydantic import BaseModel
 
 from sqlalchemy import Column, Integer, String, create_engine
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
+
+# endregion
 
 # region ~~~~~~~~~~~~~~~~~~~ Database ( SQLite / SQLAlchemy ~~~~~~~~~~~~~~~~~~~ #
 
@@ -23,7 +25,7 @@ Base = declarative_base()
 
 # endregion
 
-# ~~~~~~~~~~~~~~~~~~~ Session (-Dependency-) ~~~~~~~~~~~~~~~~~~~ #
+# region ~~~~~~~~~~~~~~~~~~~ Session (-Dependency-) ~~~~~~~~~~~~~~~~~~~ #
 
 def get_db():
     db = SessionLocal()
@@ -32,15 +34,18 @@ def get_db():
     finally:
         db.close()
 
-# ~~~~~~~~~~~~~~~~~~~ FastAPI (-Docs-) ~~~~~~~~~~~~~~~~~~~ #
+#endregion
+
+# region ~~~~~~~~~~~~~~~~~~~ FastAPI (-Docs-) ~~~~~~~~~~~~~~~~~~~ #
 app = FastAPI(
     title="Biblioteca",
     description="API de Biblioteca",
     version="1.0.0",
     contact= {"name": "Igor", "email": "igormoser@outlook.com"}
 )
+# endregion
 
-# ~~~~~~~~~~~~~~~~~~~ Security (-HTTP Basic-) ~~~~~~~~~~~~~~~~~~~ #
+# region ~~~~~~~~~~~~~~~~~~~ Security (-HTTP Basic-) ~~~~~~~~~~~~~~~~~~~ #
 
 LOGIN = "admin"
 PASSWORD = "admin"
@@ -59,8 +64,9 @@ def authenticate_user(credentials: HTTPBasicCredentials = Depends(security)) -> 
         )
 
     return credentials.username
+# endregion
 
-# ~~~~~~~~~~~~~~~~~~~ ORM Models ~~~~~~~~~~~~~~~~~~~ #
+# region ~~~~~~~~~~~~~~~~~~~ ORM Models ~~~~~~~~~~~~~~~~~~~ #
 
 class Livro(Base):
     __tablename__ = "livros"
@@ -70,8 +76,9 @@ class Livro(Base):
     ano = Column(Integer)
 
 Base.metadata.create_all(bind=engine)
+#endregion
 
-# ~~~~~~~~~~~~~~~~~~~ Schemas (-Pydantic-) ~~~~~~~~~~~~~~~~~~~ #
+# region ~~~~~~~~~~~~~~~~~~~ Schemas (-Pydantic-) ~~~~~~~~~~~~~~~~~~~ #
 
 class CriarLivro(BaseModel):
     titulo: str
@@ -82,8 +89,9 @@ class AtualizarLivro(BaseModel):
     titulo: str
     autor: str
     ano: int
+# endregion
 
-# ~~~~~~~~~~~~~~~~~~~ Paginação ~~~~~~~~~~~~~~~~~~~ #
+# region ~~~~~~~~~~~~~~~~~~~ Paginação ~~~~~~~~~~~~~~~~~~~ #
 
 @app.get("/livros", dependencies=[Depends(authenticate_user)])
 def get_livros(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
@@ -111,8 +119,9 @@ def get_livros(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
         "skip": skip,
         "limit": limit
     }
+# endregion
 
-# ~~~~~~~~~~~~~~~~~~~ CRUD ~~~~~~~~~~~~~~~~~~~ #
+# region ~~~~~~~~~~~~~~~~~~~ CRUD ~~~~~~~~~~~~~~~~~~~ #
 
 @app.get("/livros/{id_livro}", dependencies=[Depends(authenticate_user)])
 def get_livro(id_livro: int, db: Session = Depends(get_db)):
@@ -195,3 +204,4 @@ def delete_livro(id_livro: int, db: Session = Depends(get_db)):
         "mensagem": "Livro deletado com sucesso!",
         "livro": livro_removido,
     }
+# endregion
