@@ -1,5 +1,6 @@
 # region ~~~~~~~~~~~~~~~~~~~ Start do FastAPI (-Imports-) ~~~~~~~~~~~~~~~~~~~ #
 
+import os
 import secrets
 
 from fastapi import Depends, FastAPI, HTTPException
@@ -13,7 +14,7 @@ from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
 # region ~~~~~~~~~~~~~~~~~~~ Database ( SQLite / SQLAlchemy ~~~~~~~~~~~~~~~~~~~ #
 
-DATABASE_URL = "sqlite:///./biblioteca.db"
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 engine = create_engine(
     DATABASE_URL,
@@ -47,8 +48,8 @@ app = FastAPI(
 
 # region ~~~~~~~~~~~~~~~~~~~ Security (-HTTP Basic-) ~~~~~~~~~~~~~~~~~~~ #
 
-LOGIN = "admin"
-PASSWORD = "admin"
+LOGIN = os.getenv("LOGIN")
+PASSWORD = os.getenv("PASSWORD")
 
 security = HTTPBasic()
 

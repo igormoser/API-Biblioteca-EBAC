@@ -1,0 +1,10 @@
+.env
+biblioteca.db
+
+.idea/
+*.iml
+
+__pycache__/
+*.pyc
+
+.venv/
