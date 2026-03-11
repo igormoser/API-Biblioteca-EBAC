@@ -1,7 +1,11 @@
 services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
   app:
     build: .
-
     ports:
       - "8000:8000"
     volumes:
@@ -11,4 +15,57 @@ services:
       - PASSWORD=admin
       - DATABASE_URL=sqlite:///./biblioteca.db
       - PYTHONUNBUFFERED=1
+      - KAFKA_SERVER=kafka:9092
+    depends_on:
+      - kafka
     command: ["poetry", "run", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+
+  worker:
+    build: .
+    volumes:
+      - .:/app
+    environment:
+      - LOGIN=admin
+      - PASSWORD=admin
+      - DATABASE_URL=sqlite:///./biblioteca.db
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      - redis
+    command: ["poetry", "run", "celery", "-A", "celery_app:celery_app", "worker", "--loglevel=info"]
+
+    env_file:
+      - .env
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:latest
+    ports:
+      - "2181:2181"
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEPER_TICK_TIME: 2000
+
+  kafka:
+    image: confluentinc/cp-zookeeper:latest
+    container_name: biblioteca_kafka
+    ports:
+      - "9092:9092"
+    depends_on:
+      - zookeeper
+    environment:
+      - KAFKA_BROKER_ID=1
+      - KAFKA_ZOOKEEPER_CONNECT=biblioteca-zookeeper:2181
+      - KAFKA_ADVERTISED_LISTENERS=PlAINTEXT://kafka:9092
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT
+      - KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: biblioteca-kafka-ui
+    depends_on:
+      - kafka
+    ports:
+      - "8080:8080"
+    environment:
+      - KAFKA_CLUSTERS_0_NAME=local
+      - KAFKA_CLUSTERS_0_BOOTSTRAP_SERVERS=kafka:9092
+

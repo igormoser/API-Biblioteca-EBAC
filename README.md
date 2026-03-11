@@ -14,6 +14,57 @@ A API sobe com **hot reload** (modo desenvolvimento) e usa **SQLite** como banco
 - Engine de containers (Docker **ou** Podman)
 - SQLite (arquivo local)
 
+- Redis (cache e broker do Celery)
+- Celery (filas/background jobs)
+---
+
+## Redis (Cache)
+
+Este projeto usa **Redis** como **cache** para o endpoint `GET /livros`.
+
+### Como funciona o cache
+- A API tenta buscar a resposta no Redis antes de consultar o banco.
+- A chave do cache é baseada na paginação:
+  - `livros:skip=<skip>&limit=<limit>`
+- O cache tem **TTL** (expiração) para evitar dados “eternos”.
+- Após alterações (POST/PUT/DELETE), o cache é **invalidado** (apagamos as chaves `livros:*`) para evitar dados desatualizados.
+
+### Endpoint de debug
+Existe um endpoint para inspeção do cache e TTL:
+- `GET /debug/redis`
+
+> Dica: use este endpoint para confirmar que o TTL está diminuindo e que o cache é limpo após criar/atualizar/deletar um livro.
+
+### Observação sobre o host do Redis
+- Rodando **tudo via Compose**, o host do Redis normalmente é o nome do serviço: `redis`.
+- Rodando a API **localmente** (PyCharm/Poetry) com Redis exposto na porta 6379, use `localhost`.
+
+---
+
+## Celery (Filas com Redis)
+
+Este projeto também suporta **Celery** para executar tarefas em background usando o **Redis** como broker (fila) e, opcionalmente, como backend de resultados.
+
+### Arquivos principais
+- `celery_app.py`: cria o `celery_app` e configura broker/backend.
+- `tasks.py`: define tarefas (tasks) do Celery.
+
+### Rodando com Compose (Redis + API + Worker)
+Para usar Celery, o compose deve subir **três serviços**:
+- `redis`
+- `app` (FastAPI)
+- `worker` (Celery worker)
+
+O worker é iniciado com um comando semelhante a:
+```bash
+poetry run celery -A celery_app:celery_app worker --loglevel=info
+```
+
+### Sobre tasks de exemplo
+Durante o aprendizado, é comum existir `tasks.py` com exemplos (ex.: `somar`, `fatorial`) apenas para validar que o worker está executando tarefas. No projeto final, a ideia é substituir por tarefas úteis ao domínio (ex.: gerar relatórios, importações, notificações).
+
+---
+
 ---
 
 ## Requisitos (escolha UMA opção)
@@ -70,9 +121,14 @@ Subir a aplicação:
 podman compose up --build -d
 ```
 
-Acompanhar logs:
+Acompanhar logs (todos os serviços):
 ```bash
 podman compose logs -f
+```
+
+Acompanhar logs apenas do worker (Celery):
+```bash
+podman compose logs -f worker
 ```
 
 Parar e remover containers:
@@ -86,9 +142,14 @@ Subir a aplicação:
 docker compose up --build -d
 ```
 
-Acompanhar logs:
+Acompanhar logs (todos os serviços):
 ```bash
 docker compose logs -f
+```
+
+Acompanhar logs apenas do worker (Celery):
+```bash
+docker compose logs -f worker
 ```
 
 Parar e remover containers:
@@ -216,6 +277,28 @@ podman compose logs -f
 **Docker:**
 ```bash
 docker compose logs -f
+```
+
+
+### Poetry: erro ao instalar `celery[redis]`
+Em alguns ambientes, o Celery/Kombu impõe limite superior para a versão do pacote Python `redis`.
+Se `poetry add "celery[redis]"` falhar por conflito de dependências, fixe o `redis` (biblioteca Python) em uma versão compatível e tente novamente:
+```bash
+poetry add "redis>=4.5.2,<6.5"
+poetry add "celery[redis]"
+```
+
+### Podman Compose: “compose provider failed” (Windows)
+Se o comando `podman compose` não estiver disponível e aparecer erro de provider, uma alternativa é instalar `podman-compose` via pip e rodar o executável instalado no seu usuário.
+
+Exemplo (instalação):
+```bash
+python -m pip install --user podman-compose
+```
+
+Se o executável não estiver no PATH, use o caminho completo (ajuste o seu usuário/versão do Python):
+```bash
+%APPDATA%\Python\Python314\Scripts\podman-compose.exe up --build -d
 ```
 
 ---

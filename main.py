@@ -1,18 +1,21 @@
-# region ~~~~~~~~~~~~~~~~~~~ Start do FastAPI (-Imports-) ~~~~~~~~~~~~~~~~~~~ #
+#region ~~~~~~~~~~~~~~~~~~~ Start do FastAPI (-Imports-) ~~~~~~~~~~~~~~~~~~~ #
 
 import os
 import secrets
-
+import redis.asyncio as redis
+import json
+from celery_app import celery_app
+from celery.result import AsyncResult
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
-
 from sqlalchemy import Column, Integer, String, create_engine
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
 
-# endregion
 
-# region ~~~~~~~~~~~~~~~~~~~ Database ( SQLite / SQLAlchemy ~~~~~~~~~~~~~~~~~~~ #
+#endregion
+
+#region ~~~~~~~~~~~~~~~~~~~ Database ( SQLite / SQLAlchemy ~~~~~~~~~~~~~~~~~~~ #
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 
@@ -24,9 +27,27 @@ engine = create_engine(
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# endregion
 
-# region ~~~~~~~~~~~~~~~~~~~ Session (-Dependency-) ~~~~~~~~~~~~~~~~~~~ #
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
+
+redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0, decode_responses=True)
+
+CACHE_PREFIX_LIVROS = "livros:"
+CACHE_TTL_SECONDS = 300
+
+async def salvar_redis(resposta: dict, *, cache_key: str, ttl: int = CACHE_TTL_SECONDS) -> None:
+    await redis_client.setex(cache_key, ttl, json.dumps(resposta, ensure_ascii=False))
+
+async def deletar_redis() -> int:
+    chaves = await redis_client.keys("livros:*")
+    if not chaves:
+        return 0
+    return await redis_client.delete(*chaves)
+
+#endregion
+
+#region ~~~~~~~~~~~~~~~~~~~ Session (-Dependency-) ~~~~~~~~~~~~~~~~~~~ #
 
 def get_db():
     db = SessionLocal()
@@ -37,19 +58,19 @@ def get_db():
 
 #endregion
 
-# region ~~~~~~~~~~~~~~~~~~~ FastAPI (-Docs-) ~~~~~~~~~~~~~~~~~~~ #
+#region ~~~~~~~~~~~~~~~~~~~ FastAPI (-Docs-) ~~~~~~~~~~~~~~~~~~~ #
 app = FastAPI(
     title="Biblioteca",
     description="API de Biblioteca",
     version="1.0.0",
     contact= {"name": "Igor", "email": "igormoser@outlook.com"}
 )
-# endregion
+#endregion
 
-# region ~~~~~~~~~~~~~~~~~~~ Security (-HTTP Basic-) ~~~~~~~~~~~~~~~~~~~ #
+#region ~~~~~~~~~~~~~~~~~~~ Security (-HTTP Basic-) ~~~~~~~~~~~~~~~~~~~ #
 
-LOGIN = os.getenv("LOGIN")
-PASSWORD = os.getenv("PASSWORD")
+LOGIN = os.getenv("LOGIN", "")
+PASSWORD = os.getenv("PASSWORD", "")
 
 security = HTTPBasic()
 
@@ -65,9 +86,9 @@ def authenticate_user(credentials: HTTPBasicCredentials = Depends(security)) -> 
         )
 
     return credentials.username
-# endregion
+#endregion
 
-# region ~~~~~~~~~~~~~~~~~~~ ORM Models ~~~~~~~~~~~~~~~~~~~ #
+#region ~~~~~~~~~~~~~~~~~~~ ORM Models ~~~~~~~~~~~~~~~~~~~ #
 
 class Livro(Base):
     __tablename__ = "livros"
@@ -77,9 +98,10 @@ class Livro(Base):
     ano = Column(Integer)
 
 Base.metadata.create_all(bind=engine)
+
 #endregion
 
-# region ~~~~~~~~~~~~~~~~~~~ Schemas (-Pydantic-) ~~~~~~~~~~~~~~~~~~~ #
+#region ~~~~~~~~~~~~~~~~~~~ Schemas (-Pydantic-) ~~~~~~~~~~~~~~~~~~~ #
 
 class CriarLivro(BaseModel):
     titulo: str
@@ -90,12 +112,55 @@ class AtualizarLivro(BaseModel):
     titulo: str
     autor: str
     ano: int
-# endregion
 
-# region ~~~~~~~~~~~~~~~~~~~ Paginação ~~~~~~~~~~~~~~~~~~~ #
+#endregion
+
+#region ~~~~~~~~~~~~~~~~~~~ EndPoints ~~~~~~~~~~~~~~~~~~~ #
+
+@app.get("/debug/redis")
+async def debug_redis():
+    chaves = await redis_client.keys("livros:*")
+    livros = []
+
+    for chave in chaves:
+        valor = await redis_client.get(chave)
+        ttl = await redis_client.ttl(chave)
+
+        livros.append({"chave": chave, "valor": json.loads(valor) if valor else None, "ttl": ttl})
+
+    return livros
+
+@app.get("/tarefas/{task_id}", dependencies=[Depends(authenticate_user)])
+def get_status_tarefa(task_id: str):
+    task = AsyncResult(task_id, app=celery_app)
+
+    resposta = {
+        "task_id": task.id,
+        "status": task.status,
+    }
+
+    if task.status == "PENDING":
+        resposta["mensagem"] = "Tarefa aguardando processamento."
+    elif task.status == "STARTED":
+        resposta["mensagem"] = "Tarefa em processamento."
+    elif task.status == "SUCCESS":
+        resposta["mensagem"] = "Tarefa concluída com sucesso."
+        resposta["resultado"] = task.result
+    elif task.status == "FAILURE":
+        resposta["mensagem"] = "Tarefa falhou."
+        resposta["erro"] = str(task.result)
+    else:
+        resposta["mensagem"] = "Status da tarefa obtido com sucesso."
+
+    return resposta
 
 @app.get("/livros", dependencies=[Depends(authenticate_user)])
-def get_livros(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
+async def get_livros(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
+
+    cache_key = f"livros:skip={skip}&limit={limit}"
+    cached = await redis_client.get(cache_key)
+    if cached:
+        return json.loads(cached)
 
     total = db.query(Livro).count()
 
@@ -113,16 +178,22 @@ def get_livros(skip: int = 0, limit: int = 10, db: Session = Depends(get_db)):
     ]
 
     mensagem = "Biblioteca vazia!" if total == 0 else "Livros cadastrados."
-    return {
+
+    resposta = {
         "mensagem": mensagem,
         "livros": livros_paginados,
         "total": total,
         "skip": skip,
         "limit": limit
     }
-# endregion
 
-# region ~~~~~~~~~~~~~~~~~~~ CRUD ~~~~~~~~~~~~~~~~~~~ #
+    await salvar_redis(resposta, cache_key=cache_key)
+
+    return resposta
+
+#endregion
+
+#region ~~~~~~~~~~~~~~~~~~~ CRUD ~~~~~~~~~~~~~~~~~~~ #
 
 @app.get("/livros/{id_livro}", dependencies=[Depends(authenticate_user)])
 def get_livro(id_livro: int, db: Session = Depends(get_db)):
@@ -139,7 +210,7 @@ def get_livro(id_livro: int, db: Session = Depends(get_db)):
     }
 
 @app.post("/livros", dependencies=[Depends(authenticate_user)])
-def post_livros(livro: CriarLivro, db: Session = Depends(get_db)):
+async def post_livros(livro: CriarLivro, db: Session = Depends(get_db)):
     novo_livro = Livro(
         titulo=livro.titulo,
         autor=livro.autor,
@@ -148,6 +219,9 @@ def post_livros(livro: CriarLivro, db: Session = Depends(get_db)):
     db.add(novo_livro)
     db.commit()
     db.refresh(novo_livro)
+
+    await deletar_redis()
+
 
     return {
         "mensagem": "Livro criado com sucesso!",
@@ -160,7 +234,7 @@ def post_livros(livro: CriarLivro, db: Session = Depends(get_db)):
     }
 
 @app.put("/livros/{id_livro}", dependencies=[Depends(authenticate_user)])
-def put_livro(id_livro: int, livro: AtualizarLivro, db: Session = Depends(get_db)):
+async def put_livro(id_livro: int, livro: AtualizarLivro, db: Session = Depends(get_db)):
 
     livro_db = db.query(Livro).filter(Livro.id == id_livro).first()
 
@@ -174,6 +248,8 @@ def put_livro(id_livro: int, livro: AtualizarLivro, db: Session = Depends(get_db
     db.commit()
     db.refresh(livro_db)
 
+    await deletar_redis()
+
     return {
         "mensagem": "Livro atualizado com sucesso!",
         "livro": {
@@ -185,7 +261,7 @@ def put_livro(id_livro: int, livro: AtualizarLivro, db: Session = Depends(get_db
     }
 
 @app.delete("/livros/{id_livro}", dependencies=[Depends(authenticate_user)])
-def delete_livro(id_livro: int, db: Session = Depends(get_db)):
+async def delete_livro(id_livro: int, db: Session = Depends(get_db)):
     livro_db = db.query(Livro).filter(Livro.id == id_livro).first()
 
     if livro_db is None:
@@ -201,8 +277,10 @@ def delete_livro(id_livro: int, db: Session = Depends(get_db)):
     db.delete(livro_db)
     db.commit()
 
+    await deletar_redis()
+
     return {
         "mensagem": "Livro deletado com sucesso!",
         "livro": livro_removido,
     }
-# endregion
+#endregion
