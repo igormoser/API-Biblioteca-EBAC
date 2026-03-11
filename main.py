@@ -2,15 +2,19 @@
 
 import os
 import secrets
-import redis.asyncio as redis
 import json
-from celery_app import celery_app
+
+import redis.asyncio as redis
 from celery.result import AsyncResult
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import Column, Integer, String, create_engine
 from sqlalchemy.orm import Session, declarative_base, sessionmaker
+
+from celery_app import celery_app
+from kafka_producer import enviar_evento
+from tasks import calcular_fatorial, calcular_soma
 
 
 #endregion
@@ -44,6 +48,18 @@ async def deletar_redis() -> int:
     if not chaves:
         return 0
     return await redis_client.delete(*chaves)
+
+def publicar_evento_kafka_sem_quebrar_api(tipo_evento: str, payload: dict) -> None:
+    try:
+        enviar_evento(
+            "livros-eventos",
+            {
+                "evento": tipo_evento,
+                "payload": payload,
+            },
+        )
+    except Exception as exc:
+        print(f"Falha ao enviar evento ao Kafka: {exc}")
 
 #endregion
 
@@ -113,6 +129,14 @@ class AtualizarLivro(BaseModel):
     autor: str
     ano: int
 
+class SomaRequest(BaseModel):
+    a: int
+    b: int
+
+
+class FatorialRequest(BaseModel):
+    n: int = Field(ge=0)
+
 #endregion
 
 #region ~~~~~~~~~~~~~~~~~~~ EndPoints ~~~~~~~~~~~~~~~~~~~ #
@@ -129,6 +153,27 @@ async def debug_redis():
         livros.append({"chave": chave, "valor": json.loads(valor) if valor else None, "ttl": ttl})
 
     return livros
+
+@app.post("/tarefas/soma", dependencies=[Depends(authenticate_user)])
+def criar_tarefa_soma(payload: SomaRequest):
+    task = calcular_soma.delay(payload.a, payload.b)
+
+    return {
+        "mensagem": "Tarefa de soma enviada com sucesso!",
+        "task_id": task.id,
+        "status": task.status,
+    }
+
+
+@app.post("/tarefas/fatorial", dependencies=[Depends(authenticate_user)])
+def criar_tarefa_fatorial(payload: FatorialRequest):
+    task = calcular_fatorial.delay(payload.n)
+
+    return {
+        "mensagem": "Tarefa de fatorial enviada com sucesso!",
+        "task_id": task.id,
+        "status": task.status,
+    }
 
 @app.get("/tarefas/{task_id}", dependencies=[Depends(authenticate_user)])
 def get_status_tarefa(task_id: str):
@@ -222,20 +267,22 @@ async def post_livros(livro: CriarLivro, db: Session = Depends(get_db)):
 
     await deletar_redis()
 
+    livro_payload = {
+        "id": novo_livro.id,
+        "titulo": novo_livro.titulo,
+        "autor": novo_livro.autor,
+        "ano": novo_livro.ano,
+    }
+
+    publicar_evento_kafka_sem_quebrar_api("livro_criado", livro_payload)
 
     return {
         "mensagem": "Livro criado com sucesso!",
-        "livro": {
-            "id": novo_livro.id,
-            "titulo": novo_livro.titulo,
-            "autor": novo_livro.autor,
-            "ano": novo_livro.ano,
-        },
+        "livro": livro_payload,
     }
 
 @app.put("/livros/{id_livro}", dependencies=[Depends(authenticate_user)])
 async def put_livro(id_livro: int, livro: AtualizarLivro, db: Session = Depends(get_db)):
-
     livro_db = db.query(Livro).filter(Livro.id == id_livro).first()
 
     if livro_db is None:
@@ -250,14 +297,18 @@ async def put_livro(id_livro: int, livro: AtualizarLivro, db: Session = Depends(
 
     await deletar_redis()
 
+    livro_payload = {
+        "id": livro_db.id,
+        "titulo": livro_db.titulo,
+        "autor": livro_db.autor,
+        "ano": livro_db.ano,
+    }
+
+    publicar_evento_kafka_sem_quebrar_api("livro_atualizado", livro_payload)
+
     return {
         "mensagem": "Livro atualizado com sucesso!",
-        "livro": {
-            "id": livro_db.id,
-            "titulo": livro_db.titulo,
-            "autor": livro_db.autor,
-            "ano": livro_db.ano,
-        },
+        "livro": livro_payload,
     }
 
 @app.delete("/livros/{id_livro}", dependencies=[Depends(authenticate_user)])
@@ -278,6 +329,7 @@ async def delete_livro(id_livro: int, db: Session = Depends(get_db)):
     db.commit()
 
     await deletar_redis()
+    publicar_evento_kafka_sem_quebrar_api("livro_deletado", livro_removido)
 
     return {
         "mensagem": "Livro deletado com sucesso!",
